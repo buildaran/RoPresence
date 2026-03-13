@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -16,6 +16,14 @@ using Newtonsoft.Json.Linq;
 using System.Windows.Forms;
 using Application = System.Windows.Application;
 using MessageBox = System.Windows.MessageBox;
+using System.Windows.Controls;
+using System.Windows.Media;
+using Color = System.Drawing.Color;
+using Brush = System.Drawing.Brush;
+using SolidBrush = System.Drawing.SolidBrush;
+using Pen = System.Drawing.Pen;
+using Rectangle = System.Drawing.Rectangle;
+using Font = System.Drawing.Font;
 
 namespace RoPresence
 {
@@ -48,10 +56,9 @@ namespace RoPresence
         private const string DiscordAppId = "1482054506845044849";
         private const string VerifiedEmoji = "☑️";
         private const string AppTitle = "RoPresence";
-        private const string AppVersion = "v1.0.0"; // Increment this for releases
+        private const string AppVersion = "v1.1.0";
 
-        // UPDATE SETTINGS: Point this to your actual GitHub repo
-        private const string GitHubUser = "YourGitHubUsername";
+        private const string GitHubUser = "buildaran";
         private const string GitHubRepo = "RoPresence";
         private string UpdateUrl => $"https://api.github.com/repos/{GitHubUser}/{GitHubRepo}/releases/latest";
 
@@ -60,6 +67,7 @@ namespace RoPresence
         private string HistoryPath => Path.Combine(AppDataFolder, "history.txt");
 
         private ToolStripMenuItem _rpcToggleItem;
+        private Icon _appIcon;
 
         private void OnStartup(object sender, StartupEventArgs e)
         {
@@ -68,24 +76,6 @@ namespace RoPresence
             Directory.CreateDirectory(AppDataFolder);
             LoadSettings();
 
-            SetupTray();
-            InitializeDiscord();
-            StartWatcher();
-            StartProcessMonitor();
-
-            // Check for updates asynchronously
-            _ = CheckForUpdates();
-
-            Application.Current.Exit += OnApplicationExit;
-            Debug.WriteLine($"[DEBUG] {AppTitle} {AppVersion} Started.");
-        }
-
-        #region Initialization & UI
-
-        private void SetupTray()
-        {
-            _trayIcon = new NotifyIcon { Visible = true, Text = $"{AppTitle} - Idle" };
-
             try
             {
                 string iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "Icon.png");
@@ -93,21 +83,40 @@ namespace RoPresence
                 {
                     using (Bitmap bitmap = new Bitmap(iconPath))
                     {
-                        _trayIcon.Icon = Icon.FromHandle(bitmap.GetHicon());
+                        _appIcon = Icon.FromHandle(bitmap.GetHicon());
                     }
                 }
-                else _trayIcon.Icon = SystemIcons.Application;
+                else _appIcon = SystemIcons.Application;
             }
-            catch { _trayIcon.Icon = SystemIcons.Application; }
+            catch { _appIcon = SystemIcons.Application; }
+
+            SetupTray();
+            InitializeDiscord();
+            StartWatcher();
+            StartProcessMonitor();
+
+            _ = CheckForUpdates();
+
+            Application.Current.Exit += OnApplicationExit;
+        }
+
+        #region Initialization & UI
+
+        private void SetupTray()
+        {
+            _trayIcon = new NotifyIcon { Visible = true, Text = $"{AppTitle} - Idle", Icon = _appIcon };
 
             _trayMenu = new ContextMenuStrip();
             _trayMenu.Renderer = new DarkMenuRenderer();
-            _trayMenu.ShowImageMargin = true;
+            _trayMenu.ShowImageMargin = true; // Enabled to allow icons on the left
 
+            // Header with Icon on the left
             var header = new ToolStripMenuItem($"{AppTitle} {AppVersion}");
             header.Enabled = false;
+            header.Image = _appIcon.ToBitmap();
             header.Font = new Font(_trayMenu.Font.FontFamily, 9, System.Drawing.FontStyle.Bold);
             _trayMenu.Items.Add(header);
+
             _trayMenu.Items.Add(new ToolStripSeparator());
 
             _rpcToggleItem = new ToolStripMenuItem("Discord Rich Presence");
@@ -116,8 +125,10 @@ namespace RoPresence
             _rpcToggleItem.CheckedChanged += (s, ev) => {
                 _settings.DiscordRpcEnabled = _rpcToggleItem.Checked;
                 SaveSettings();
-                if (_settings.DiscordRpcEnabled) Task.Run(() => UpdatePresence(_currentPlaceId));
-                else ClearPresence(false);
+                if (_settings.DiscordRpcEnabled && IsRobloxRunning() && !string.IsNullOrEmpty(_currentPlaceId))
+                    Task.Run(() => UpdatePresence(_currentPlaceId));
+                else
+                    ClearPresence(false);
             };
             _trayMenu.Items.Add(_rpcToggleItem);
 
@@ -134,6 +145,41 @@ namespace RoPresence
             _trayIcon.ContextMenuStrip = _trayMenu;
         }
 
+        private void ShowUpdateUI(string version, string url)
+        {
+            this.Dispatcher.Invoke(() => {
+                Window updateWin = new Window
+                {
+                    Title = "Update Available",
+                    Width = 350,
+                    Height = 180,
+                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                    Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(43, 45, 49)),
+                    Foreground = System.Windows.Media.Brushes.White,
+                    ResizeMode = ResizeMode.NoResize,
+                    Topmost = true
+                };
+
+                StackPanel stack = new StackPanel { Margin = new Thickness(20) };
+                stack.Children.Add(new TextBlock { Text = "A new update is available!", FontSize = 16, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 10) });
+                stack.Children.Add(new TextBlock { Text = $"Version {version} is now ready to download.", Margin = new Thickness(0, 0, 0, 20) });
+
+                System.Windows.Controls.Button btn = new System.Windows.Controls.Button
+                {
+                    Content = "Download on GitHub",
+                    Padding = new Thickness(10, 5, 10, 5),
+                    Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(88, 101, 242)),
+                    Foreground = System.Windows.Media.Brushes.White,
+                    BorderThickness = new Thickness(0)
+                };
+                btn.Click += (s, e) => { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); updateWin.Close(); };
+
+                stack.Children.Add(btn);
+                updateWin.Content = stack;
+                updateWin.Show();
+            });
+        }
+
         #endregion
 
         #region Update Checker
@@ -142,21 +188,19 @@ namespace RoPresence
         {
             try
             {
+                _httpClient.DefaultRequestHeaders.UserAgent.Clear();
                 _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("RoPresence-App");
                 var response = await _httpClient.GetStringAsync(UpdateUrl);
                 var release = JObject.Parse(response);
                 string latestTag = release["tag_name"]?.ToString();
+                string htmlUrl = release["html_url"]?.ToString();
 
                 if (!string.IsNullOrEmpty(latestTag) && latestTag != AppVersion)
                 {
-                    this.Dispatcher.Invoke(() => {
-                        _trayIcon.ShowBalloonTip(5000, "Update Available",
-                            $"A new version ({latestTag}) is out! You are on {AppVersion}. Check GitHub for the update.",
-                            ToolTipIcon.Info);
-                    });
+                    ShowUpdateUI(latestTag, htmlUrl);
                 }
             }
-            catch { /* Update check failed, likely no internet or repo private */ }
+            catch { }
         }
 
         #endregion
@@ -169,7 +213,6 @@ namespace RoPresence
             _rpcClient.Logger = new ConsoleLogger() { Level = LogLevel.Warning };
 
             _rpcClient.OnReady += (sender, msg) => {
-                Debug.WriteLine($"[RPC] Connected to Discord as {msg.User.Username}");
                 if (!string.IsNullOrEmpty(_currentPlaceId) && IsRobloxRunning() && _settings.DiscordRpcEnabled)
                 {
                     Task.Run(() => UpdatePresence(_currentPlaceId));
@@ -181,7 +224,11 @@ namespace RoPresence
 
         private async Task UpdatePresence(string placeId)
         {
-            if (!_settings.DiscordRpcEnabled || string.IsNullOrEmpty(placeId) || _rpcClient == null) return;
+            if (!IsRobloxRunning() || !_settings.DiscordRpcEnabled || string.IsNullOrEmpty(placeId) || _rpcClient == null)
+            {
+                ClearPresence();
+                return;
+            }
 
             try
             {
@@ -199,27 +246,35 @@ namespace RoPresence
                 string creatorName = gameData["creator"]?["name"]?.ToString() ?? "Unknown";
                 bool isVerified = gameData["creator"]?["hasVerifiedBadge"]?.Value<bool>() ?? false;
 
-                string stateText = _settings.ShowCreator ? $"by {creatorName}{(isVerified ? $" {VerifiedEmoji}" : "")}" : "Playing";
+                string stateText = _settings.ShowCreator ? $"By {creatorName}{(isVerified ? $" {VerifiedEmoji}" : "")}" : "Playing";
 
-                this.Dispatcher.Invoke(() => {
-                    _trayIcon.Text = $"{AppTitle}: {_currentGameName}";
-                });
+                string largeImageUrl = "roblox_logo";
+                try
+                {
+                    var iconRes = await _httpClient.GetAsync($"https://thumbnails.roblox.com/v1/places/gameicons?placeIds={placeId}&returnPolicy=PlaceHolder&size=512x512&format=Png&isCircular=false");
+                    if (iconRes.IsSuccessStatusCode)
+                    {
+                        var iconData = JObject.Parse(await iconRes.Content.ReadAsStringAsync())["data"]?[0];
+                        if (iconData != null && iconData["imageUrl"] != null)
+                            largeImageUrl = iconData["imageUrl"].ToString();
+                    }
+                }
+                catch { }
+
+                this.Dispatcher.Invoke(() => { _trayIcon.Text = $"{AppTitle}: {_currentGameName}"; });
 
                 LogGameHistory(_currentGameName, placeId, _currentJobId);
 
                 if (!_rpcClient.IsInitialized) return;
 
-                // Restructured to avoid NullReferenceException in internal Merge logic
                 var presence = new RichPresence()
                 {
                     Details = _currentGameName,
                     State = stateText,
                     Assets = new Assets()
                     {
-                        LargeImageKey = "roblox_logo", // Must exist in Discord Dev Portal
-                        LargeImageText = "Roblox",
-                        SmallImageKey = "", // Ensure these are empty strings, not null
-                        SmallImageText = ""
+                        LargeImageKey = largeImageUrl,
+                        LargeImageText = _currentGameName
                     },
                     Buttons = new DiscordRPC.Button[]
                     {
@@ -228,17 +283,20 @@ namespace RoPresence
                 };
 
                 if (_settings.ShowTimestamp) presence.Timestamps = Timestamps.Now;
-
                 _rpcClient.SetPresence(presence);
             }
-            catch (Exception ex) { Debug.WriteLine($"[RPC Error] {ex.Message}"); }
+            catch { }
         }
 
         private void StartProcessMonitor()
         {
             _processCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
             _processCheckTimer.Tick += (s, e) => {
-                if (!IsRobloxRunning() && !string.IsNullOrEmpty(_currentPlaceId)) ClearPresence();
+                if (!IsRobloxRunning() && !string.IsNullOrEmpty(_currentPlaceId))
+                {
+                    try { if (File.Exists(HistoryPath)) File.WriteAllText(HistoryPath, "--- Game History Cleared ---\n"); } catch { }
+                    ClearPresence();
+                }
             };
             _processCheckTimer.Start();
         }
@@ -275,12 +333,7 @@ namespace RoPresence
             {
                 using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 {
-                    if (_currentLogFile != path)
-                    {
-                        _currentLogFile = path;
-                        _lastReadOffset = 0;
-                    }
-
+                    if (_currentLogFile != path) { _currentLogFile = path; _lastReadOffset = 0; }
                     if (fs.Length <= _lastReadOffset) return;
                     fs.Seek(_lastReadOffset, SeekOrigin.Begin);
 
@@ -296,13 +349,11 @@ namespace RoPresence
                         }
 
                         var placeMatch = Regex.Match(content, @"placeId[:=]\s?(\d+)", RegexOptions.IgnoreCase);
-                        var jobMatch = Regex.Match(content, @"jobId[:=]\s?([a-fA-F0-9\-]+)", RegexOptions.IgnoreCase);
-
                         if (placeMatch.Success && _currentPlaceId != placeMatch.Groups[1].Value)
                         {
                             _currentPlaceId = placeMatch.Groups[1].Value;
-                            if (jobMatch.Success) _currentJobId = jobMatch.Groups[1].Value;
-                            Task.Run(() => UpdatePresence(_currentPlaceId));
+                            if (_settings.DiscordRpcEnabled)
+                                Task.Run(() => UpdatePresence(_currentPlaceId));
                         }
                     }
                 }
@@ -312,12 +363,7 @@ namespace RoPresence
 
         private void ClearPresence(bool clearInternalState = true)
         {
-            if (clearInternalState)
-            {
-                _currentPlaceId = "";
-                _currentJobId = "";
-                _currentGameName = "";
-            }
+            if (clearInternalState) { _currentPlaceId = ""; _currentJobId = ""; _currentGameName = ""; }
             _rpcClient?.ClearPresence();
             this.Dispatcher.Invoke(() => { if (_trayIcon != null) _trayIcon.Text = $"{AppTitle} - Idle"; });
         }
@@ -332,6 +378,7 @@ namespace RoPresence
 
         private void OpenFileSafe(string path, string name)
         {
+            if (string.IsNullOrEmpty(path)) return;
             if (!File.Exists(path)) File.WriteAllText(path, $"--- {name} ---\n");
             try { Process.Start(new ProcessStartInfo("notepad.exe", path) { UseShellExecute = true }); } catch { }
         }
@@ -361,26 +408,41 @@ namespace RoPresence
     public class DarkMenuRenderer : ToolStripProfessionalRenderer
     {
         public DarkMenuRenderer() : base(new DarkColors()) { }
+
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
             if (e.Item.Enabled && e.Item.Selected)
             {
                 using (var brush = new SolidBrush(Color.FromArgb(64, 66, 73)))
-                    e.Graphics.FillRoundedRectangle(brush, new Rectangle(2, 1, e.Item.Width - 4, e.Item.Height - 2), 4);
+                    e.Graphics.FillRoundedRectangle(brush, new Rectangle(4, 1, e.Item.Width - 8, e.Item.Height - 2), 4);
             }
-            else base.OnRenderMenuItemBackground(e);
         }
+
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
             e.TextColor = e.Item.Enabled ? Color.White : Color.Gray;
             base.OnRenderItemText(e);
         }
+
         protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
         {
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             Rectangle rect = new Rectangle(4, (e.Item.Height - 16) / 2, 16, 16);
             using (var brush = new SolidBrush(Color.FromArgb(64, 66, 73))) e.Graphics.FillRoundedRectangle(brush, rect, 4);
             using (var pen = new Pen(Color.White, 1.5f)) e.Graphics.DrawLines(pen, new System.Drawing.Point[] { new System.Drawing.Point(rect.X + 4, rect.Y + 8), new System.Drawing.Point(rect.X + 7, rect.Y + 11), new System.Drawing.Point(rect.X + 12, rect.Y + 5) });
+        }
+
+        protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+        {
+            using (var pen = new Pen(Color.FromArgb(60, 60, 65)))
+                e.Graphics.DrawLine(pen, 30, e.Item.Height / 2, e.Item.Width - 10, e.Item.Height / 2);
+        }
+
+        protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
+        {
+            // Specifically prevents the white margin while keeping icons functional
+            using (var brush = new SolidBrush(Color.FromArgb(43, 45, 49)))
+                e.Graphics.FillRectangle(brush, e.AffectedBounds);
         }
     }
 
@@ -389,7 +451,9 @@ namespace RoPresence
         public override Color ToolStripDropDownBackground => Color.FromArgb(43, 45, 49);
         public override Color MenuBorder => Color.FromArgb(30, 31, 34);
         public override Color MenuItemBorder => Color.Transparent;
-        public override Color SeparatorDark => Color.FromArgb(60, 60, 65);
+        public override Color ImageMarginGradientBegin => Color.FromArgb(43, 45, 49);
+        public override Color ImageMarginGradientMiddle => Color.FromArgb(43, 45, 49);
+        public override Color ImageMarginGradientEnd => Color.FromArgb(43, 45, 49);
     }
 
     public static class GraphicsExtensions
@@ -399,6 +463,8 @@ namespace RoPresence
             using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath())
             {
                 int d = cornerRadius * 2;
+                if (d > bounds.Width) d = bounds.Width;
+                if (d > bounds.Height) d = bounds.Height;
                 path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
                 path.AddArc(bounds.X + bounds.Width - d, bounds.Y, d, d, 270, 90);
                 path.AddArc(bounds.X + bounds.Width - d, bounds.Y + bounds.Height - d, d, d, 0, 90);
